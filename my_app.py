@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import json
 import os
 import re
-from supabase import create_client, Client  # 🔄 引入 Supabase 官方連線套件
+from supabase import create_client, Client
 
 # --- 1. 初始化與路徑設定 ---
 st.set_page_config(page_title="Hinge 永久分析系統 v2", layout="wide")
@@ -19,7 +19,7 @@ CONTROL_LIMITS = {
 }
 
 # ==========================================
-# 🔄 安全防護：初始化 Supabase 連線 (從雲端 Secrets 讀取)
+# 🔄 安全防護：初始化 Supabase 連線
 # ==========================================
 try:
     url: str = st.secrets["SUPABASE_URL"]
@@ -28,7 +28,7 @@ try:
     supabase_ready = True
 except Exception as e:
     supabase_ready = False
-    st.sidebar.warning(f"⚠️ Supabase 尚未連線（金鑰未設定）：{e}")
+    st.sidebar.error(f"❌ 嚴重錯誤：無法建立 Supabase 連線設定，請確認 Secrets。錯誤資訊: {e}")
 
 # --- 2. 穩定的資料庫讀寫功能 ---
 def load_db():
@@ -133,7 +133,6 @@ def calculate_decay_rates(data_dict):
 st.sidebar.title("📁 樣品資料庫管理")
 all_names = list(st.session_state.samples_data.keys())
 
-# 🛠️ 重新優化結構：防範複製出錯的側邊欄安全排版
 if all_names:
     st.sidebar.subheader("現有樣品清單")
     for old_name in all_names:
@@ -161,10 +160,12 @@ with tab1:
             raw_dict = process_hinge_data(files)
             if raw_dict:
                 decay_df = calculate_decay_rates(raw_dict)
+                
+                # 先確保本地存檔成功
                 st.session_state.samples_data[s_name] = decay_df
                 save_db(st.session_state.samples_data)
                 
-                # 🔄 【核心補回】同步上傳至 Supabase 雲端資料庫
+                # 🔄 同步上傳至 Supabase
                 if supabase_ready:
                     try:
                         parsed_supabase_rows = []
@@ -178,7 +179,6 @@ with tab1:
                                     col_name = f"{inv}_{m}"
                                     if col_name in decay_df.columns:
                                         val = row[col_name]
-                                        # 🔍 對齊你在 Supabase 後台實際建立的欄位名稱 (file_name, no)
                                         parsed_supabase_rows.append({
                                             "file_name": s_name,
                                             "no": current_cycle,
@@ -188,15 +188,18 @@ with tab1:
                                         })
                         
                         if parsed_supabase_rows:
-                            supabase_client.table("hinge").insert(parsed_supabase_rows).execute()
-                            st.sidebar.success(f"☁️ {s_name} 已同步至 Supabase！")
-                            
+                            res = supabase_client.table("hinge").insert(parsed_supabase_rows).execute()
+                            st.success(f"🎉 雲端連線成功！數據已成功同步至 Supabase！")
+                            st.sidebar.success(f"☁️ {s_name} 已同步！")
                     except Exception as e:
-                        st.error(f"❌ Supabase 寫入錯誤：{e}")
-                        st.sidebar.error(f"❌ Supabase 同步失敗。")
+                        # 🚨 這裡會強行留下紅色錯誤訊息，絕不閃退
+                        st.error(f"🛑 Supabase 拒絕寫入資料！錯誤原因：{e}")
+                        st.sidebar.error(f"❌ 同步失敗")
+                else:
+                    st.warning("⚠️ 系統未啟用 Supabase 同步功能，僅儲存於本地端。")
                 
-                st.success(f"✅ {s_name} 已成功存檔！")
-                st.rerun()
+                st.success(f"✅ 本地端資料已存檔成功！")
+                # 🛠️ 移除原本的 st.rerun()，讓錯誤訊息強行留在畫面上
             else:
                 st.error("無法解析檔案內容，請確認檔案格式是否正確。")
 
