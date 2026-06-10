@@ -169,11 +169,11 @@ with tab1:
             if raw_dict:
                 decay_df = calculate_decay_rates(raw_dict)
                 
-                # 保留原本的本地端的運作流程 (不破壞任何畫面)
+                # 保留原本的本地端的運作流程 (100% 安全不破壞畫面)
                 st.session_state.samples_data[s_name] = decay_df
                 save_db(st.session_state.samples_data)
                 
-                # 🔄 【全新擴充】同步上傳一份到 Supabase 雲端資料庫 (拆解為標準垂直規格)
+                # 🔄 【全新擴充】同步上傳一份到 Supabase 雲端資料庫
                 if supabase_ready:
                     try:
                         parsed_supabase_rows = []
@@ -202,7 +202,9 @@ with tab1:
                             st.sidebar.success(f"☁️ {s_name} 已同步至 Supabase！")
                             
                     except Exception as e:
-                        st.sidebar.error(f"❌ Supabase 同步失敗 (不影響本地運作)：{e}")
+                        # 🚨 關鍵亮點：直接把詳細錯誤噴在主畫面上，讓我們抓出兇手！
+                        st.error(f"❌ Supabase 寫入錯誤：{e}")
+                        st.sidebar.error(f"❌ Supabase 同步失敗。")
                 
                 st.success(f"✅ {s_name} 已成功存檔！")
                 st.rerun()
@@ -213,7 +215,7 @@ with tab2:
     if not st.session_state.samples_data:
         st.warning("目前無數據，請先上傳。")
     else:
-        sel_sample = st.selectbox("🔍 檢見樣品詳細趨勢：", all_names)
+        sel_sample = st.selectbox("🔍 檢視樣品詳細趨勢：", all_names)
         df_view = st.session_state.samples_data[sel_sample]
         
         intervals = ["Open 15-75", "Open 75-120", "Close 120-35", "Close 35-15"]
@@ -242,77 +244,4 @@ with tab2:
             row_data = {"Sample": sn}
             for inv in all_intervals:
                 for m in all_metrics:
-                    col_name = f"{inv}_{m}_衰退率%"
-                    if col_name in sdf.columns:
-                        row_data[f"{inv}_{m}_MAX"] = f"{sdf[col_name].max():.2f}%"
-                        row_data[f"{inv}_{m}_MIN"] = f"{sdf[col_name].min():.2f}%"
-            summary_rows.append(row_data)
-
-        if summary_rows:
-            df_summary = pd.DataFrame(summary_rows)
-            df_summary.set_index("Sample", inplace=True)
-            
-            multi_cols = []
-            for inv in all_intervals:
-                angle = inv.split(' ')[1] 
-                for m in all_metrics:
-                    group_name = f"T0 Torque data(%)-{m}({angle})"
-                    multi_cols.append((group_name, "MAX"))
-                    multi_cols.append((group_name, "MIN"))
-            
-            df_summary.columns = pd.MultiIndex.from_tuples(multi_cols)
-            st.dataframe(df_summary, use_container_width=True)
-
-        st.divider()
-
-        # ==========================================
-        # SPC 看板
-        # ==========================================
-        st.subheader("📉 多樣品極值 SPC 管制圖")
-        metric = st.radio("檢視指標：", ["Max", "Min", "Avg"], horizontal=True)
-        extreme_type = st.radio("極值類型：", ["全局最大值 (MAX)", "全局最小值 (MIN)"], horizontal=True)
-        
-        col_key = f"{sel_int}_{metric}_衰退率%"
-        
-        spc_data = []
-        for sn, sdf in st.session_state.samples_data.items():
-            if col_key in sdf.columns:
-                if "MAX" in extreme_type:
-                    peak_val = sdf[col_key].max()
-                else:
-                    peak_val = sdf[col_key].min()
-                
-                if pd.notna(peak_val):
-                    spc_data.append({"Sample": sn, "Peak_Change": peak_val})
-                
-        if len(spc_data) == 0:
-            st.warning(f"⚠️ 找不到對應的數據可繪製，請確認此區間 ({sel_int}) 是否有資料。")
-        else:
-            spc_df = pd.DataFrame(spc_data)
-            spc_df['Peak_Change'] = pd.to_numeric(spc_df['Peak_Change'], errors='coerce')
-
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(
-                x=spc_df['Sample'], 
-                y=spc_df['Peak_Change'], 
-                mode='lines+markers+text', 
-                name='樣品極值', 
-                marker=dict(size=12),
-                text=spc_df['Peak_Change'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else ""),
-                textposition="top center"
-            ))
-            
-            limits = CONTROL_LIMITS.get(sel_int, {"UCL": 15, "LCL": -15})
-            ucl, lcl = limits.get("UCL", 15), limits.get("LCL", -15)
-            
-            fig2.add_hline(y=ucl, line_dash="dash", line_color="red", annotation_text=f"UCL +{ucl}%")
-            fig2.add_hline(y=lcl, line_dash="dash", line_color="red", annotation_text=f"LCL {lcl}%")
-            
-            y_max = max(spc_df['Peak_Change'].max() + 3, ucl + 3)
-            y_min = min(spc_df['Peak_Change'].min() - 3, lcl - 3)
-            
-            fig2.update_layout(
-                yaxis_title="最大/最小變化率 (%)",
-                yaxis=dict(range=[y_min, y_max])
-            )
-            st.plotly_chart(fig2, use_container_width=True)
+                    col_name = f"{inv
