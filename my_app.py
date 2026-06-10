@@ -19,7 +19,7 @@ CONTROL_LIMITS = {
 }
 
 # ==========================================
-# 🔄 核心安全防護：初始化 Supabase 連線 (從雲端 Secrets 讀取)
+# 🔄 安全防護：初始化 Supabase 連線 (從雲端 Secrets 讀取)
 # ==========================================
 try:
     url: str = st.secrets["SUPABASE_URL"]
@@ -28,7 +28,6 @@ try:
     supabase_ready = True
 except Exception as e:
     supabase_ready = False
-    # 在側邊欄貼心提示，但不中斷原本程式運作
     st.sidebar.warning(f"⚠️ Supabase 尚未連線（本地測試或金鑰未設定）：{e}")
 
 # --- 2. 穩定的資料庫讀寫功能 ---
@@ -51,7 +50,7 @@ def save_db(data_dict):
 if 'samples_data' not in st.session_state:
     st.session_state.samples_data = load_db()
 
-# --- 3. 數據處理核心 (完全保留您最精準的 Hinge 解析邏輯) ---
+# --- 3. 數據處理核心 ---
 def process_hinge_data(files):
     all_cycle_data = {}
     for file in files:
@@ -166,31 +165,44 @@ with tab1:
     
     if st.button("🚀 執行分析並存入資料庫") and files:
         with st.spinner("數據轉換中..."):
-            # 1. 執行您原本最完美的 Hinge 演算法清洗資料
             raw_dict = process_hinge_data(files)
             if raw_dict:
-                # 2. 計算衰退率 DataFrame
                 decay_df = calculate_decay_rates(raw_dict)
                 
-                # 3. 完整保留原本的本地端 JSON 存檔流程
+                # 保留原本的本地端的運作流程 (不破壞任何畫面)
                 st.session_state.samples_data[s_name] = decay_df
                 save_db(st.session_state.samples_data)
                 
-                # 🔄 4. 【全新擴充】同步上傳一份到 Supabase 雲端資料庫
+                # 🔄 【全新擴充】同步上傳一份到 Supabase 雲端資料庫 (拆解為標準垂直規格)
                 if supabase_ready:
                     try:
-                        # 準備要上傳的結構，加上樣品名稱以便日後篩選
-                        supabase_df = decay_df.copy()
-                        supabase_df.insert(0, "sample_name", s_name)
+                        parsed_supabase_rows = []
+                        all_intervals = ["Open 15-75", "Open 75-120", "Close 120-35", "Close 35-15"]
+                        all_metrics = ["Max", "Min", "Avg", "Max_衰退率%", "Min_衰退率%", "Avg_衰退率%"]
                         
-                        # 轉為 Supabase 接受的 JSON 字典格式
-                        data_to_insert = supabase_df.to_dict(orient="records")
+                        for index, row in decay_df.iterrows():
+                            current_cycle = int(row['Cycle'])
+                            
+                            for inv in all_intervals:
+                                for m in all_metrics:
+                                    col_name = f"{inv}_{m}"
+                                    if col_name in decay_df.columns:
+                                        val = row[col_name]
+                                        parsed_supabase_rows.append({
+                                            "sample_name": s_name,
+                                            "cycle": current_cycle,
+                                            "interval_name": inv,
+                                            "metric_type": m,
+                                            "value": float(val) if pd.notna(val) else None
+                                        })
                         
-                        # 批次寫入您在 Supabase 建立的 experiment_data 資料表
-                        supabase_client.table("experiment_data").insert(data_to_insert).execute()
-                        st.sidebar.success(f"☁️ {s_name} 已同步備份至 Supabase！")
+                        # 批次寫入名為 'hinge' 的資料表中
+                        if parsed_supabase_rows:
+                            supabase_client.table("hinge").insert(parsed_supabase_rows).execute()
+                            st.sidebar.success(f"☁️ {s_name} 已同步至 Supabase！")
+                            
                     except Exception as e:
-                        st.sidebar.error(f"❌ Supabase 同步失敗 (但不影響本地系統)：{e}")
+                        st.sidebar.error(f"❌ Supabase 同步失敗 (不影響本地運作)：{e}")
                 
                 st.success(f"✅ {s_name} 已成功存檔！")
                 st.rerun()
@@ -201,7 +213,7 @@ with tab2:
     if not st.session_state.samples_data:
         st.warning("目前無數據，請先上傳。")
     else:
-        sel_sample = st.selectbox("🔍 檢視樣品詳細趨勢：", all_names)
+        sel_sample = st.selectbox("🔍 檢見樣品詳細趨勢：", all_names)
         df_view = st.session_state.samples_data[sel_sample]
         
         intervals = ["Open 15-75", "Open 75-120", "Close 120-35", "Close 35-15"]
@@ -218,7 +230,7 @@ with tab2:
         st.divider()
 
         # ==========================================
-        # GQC判定表 (各區間全局衰退極值) - 完全保留
+        # GQC判定表 (各區間全局衰退極值)
         # ==========================================
         st.subheader("📋 GQC判定表 (各區間全局衰退極值)")
         
@@ -254,7 +266,7 @@ with tab2:
         st.divider()
 
         # ==========================================
-        # SPC 看板 - 完全保留
+        # SPC 看板
         # ==========================================
         st.subheader("📉 多樣品極值 SPC 管制圖")
         metric = st.radio("檢視指標：", ["Max", "Min", "Avg"], horizontal=True)
