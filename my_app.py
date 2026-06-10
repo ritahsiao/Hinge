@@ -179,6 +179,7 @@ with tab1:
                                     col_name = f"{inv}_{m}"
                                     if col_name in decay_df.columns:
                                         val = row[col_name]
+                                        # 🔍 欄位名稱對齊你實際在 Supabase 建立的 file_name 和 no
                                         parsed_supabase_rows.append({
                                             "file_name": s_name,
                                             "no": current_cycle,
@@ -192,18 +193,17 @@ with tab1:
                             st.success(f"🎉 雲端連線成功！數據已成功同步至 Supabase！")
                             st.sidebar.success(f"☁️ {s_name} 已同步！")
                     except Exception as e:
-                        # 🚨 這裡會強行留下紅色錯誤訊息，絕不閃退
                         st.error(f"🛑 Supabase 拒絕寫入資料！錯誤原因：{e}")
                         st.sidebar.error(f"❌ 同步失敗")
                 else:
                     st.warning("⚠️ 系統未啟用 Supabase 同步功能，僅儲存於本地端。")
                 
                 st.success(f"✅ 本地端資料已存檔成功！")
-                # 🛠️ 移除原本的 st.rerun()，讓錯誤訊息強行留在畫面上
             else:
                 st.error("無法解析檔案內容，請確認檔案格式是否正確。")
 
 with tab2:
+    # (底下的看板程式碼完全保持不變...)
     if not st.session_state.samples_data:
         st.warning("目前無數據，請先上傳。")
     else:
