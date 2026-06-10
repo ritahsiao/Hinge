@@ -146,4 +146,4 @@ if all_names:
     for old_name in all_names:
         with st.sidebar.expander(f"📦 {old_name}"):
             new_n = st.text_input("修改名稱", value=old_name, key=f"rename_{old_name}")
-            if new_n != old_name and new_n not in st.session_state
+            if new_n != old_name and new_n not in st.session_state:
