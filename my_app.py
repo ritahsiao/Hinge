@@ -1,122 +1,306 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-from supabase import create_client, Client
+import plotly.graph_objects as go
+import json
+import os
+import re
+from supabase import create_client, Client  # 🔄 引入 Supabase 官方連線套件
+
+# --- 1. 初始化與路徑設定 ---
+st.set_page_config(page_title="Hinge 永久分析系統 v2", layout="wide")
+DB_FILE = "hinge_data_v2.json"
+
+CONTROL_LIMITS = {
+    "Open 15-75": {"UCL": 13, "LCL": -15},
+    "Open 75-120": {"UCL": 11, "LCL": -15},
+    "Close 120-35": {"UCL": 19, "LCL": -13},
+    "Close 35-15": {"UCL": 19, "LCL": -9}
+}
 
 # ==========================================
-# 1. 初始化 Supabase 連線 (從 Secrets 讀取)
+# 🔄 核心安全防護：初始化 Supabase 連線 (從雲端 Secrets 讀取)
 # ==========================================
-url: str = st.secrets["SUPABASE_URL"]
-key: str = st.secrets["SUPABASE_KEY"]
-supabase: Client = create_client(url, key)
+try:
+    url: str = st.secrets["SUPABASE_URL"]
+    key: str = st.secrets["SUPABASE_KEY"]
+    supabase_client: Client = create_client(url, key)
+    supabase_ready = True
+except Exception as e:
+    supabase_ready = False
+    # 在側邊欄貼心提示，但不中斷原本程式運作
+    st.sidebar.warning(f"⚠️ Supabase 尚未連線（本地測試或金鑰未設定）：{e}")
 
-st.title("🔬 實驗數據上傳與保存系統")
+# --- 2. 穩定的資料庫讀寫功能 ---
+def load_db():
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                raw_data = json.load(f)
+                return {k: pd.DataFrame.from_dict(v) for k, v in raw_data.items()}
+        except Exception as e:
+            st.error(f"資料庫讀取失敗，已建立新資料庫。錯誤: {e}")
+            return {}
+    return {}
 
-# ==========================================
-# 2. 檔案上傳介面
-# ==========================================
-uploaded_file = st.file_uploader("請上傳您的原始資料 Excel 檔", type=["xlsx", "xls"])
+def save_db(data_dict):
+    serialized = {k: v.to_dict(orient='records') for k, v in data_dict.items()}
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(serialized, f, ensure_ascii=False, indent=4)
 
-if uploaded_file is not None:
-    file_name = uploaded_file.name
-    st.success(f"成功偵測到檔案：{file_name}")
-    
-    # 讀取 Excel (跳過第一列，因為第一列通常是組別 #1#, #2#)
-    # 這裡會根據你實際的 Excel 結構微調，以下為標準轉換邏輯
-    df_raw = pd.read_excel(uploaded_file)
-    
-    st.subheader("📊 原始上傳資料預覽")
-    st.dataframe(df_raw.head())
-    
-    # ==========================================
-    # 3. 核心：將橫向資料洗成「垂直規格」資料表
-    # ==========================================
-    # 這裡我們用一小段 Python 自動辨識你的 #1#, #2# 組別並拆解
-    parsed_rows = []
-    
-    # 假設你的 Excel 最左邊是 'No' 欄位
-    for index, row in df_raw.iterrows():
-        no_val = row.get('No', index) # 如果沒找到 No 就用列索引
-        
-        # 每 3 欄為一組 (#1# Load, Distance, Time, #2# Load, Distance, Time...)
-        # 根據你上傳的圖片，從第 1 欄開始每 3 個一組
-        col_idx = 1
-        group_num = 1
-        
-        while col_idx < len(df_raw.columns):
-            try:
-                # 抓取連續的三個欄位數值
-                load_val = row.iloc[col_idx]
-                dist_val = row.iloc[col_idx + 1] if (col_idx + 1) < len(df_raw.columns) else None
-                time_val = row.iloc[col_idx + 2] if (col_idx + 2) < len(df_raw.columns) else None
+if 'samples_data' not in st.session_state:
+    st.session_state.samples_data = load_db()
+
+# --- 3. 數據處理核心 (完全保留您最精準的 Hinge 解析邏輯) ---
+def process_hinge_data(files):
+    all_cycle_data = {}
+    for file in files:
+        try:
+            df_raw = pd.read_csv(file, header=None) if file.name.endswith('.csv') else pd.read_excel(file, header=None)
+            for col_idx in range(1, df_raw.shape[1], 3):
+                cycle_name = ""
+                for offset in [-1, 0, 1]:
+                    if col_idx + offset < df_raw.shape[1]:
+                        val = str(df_raw.iloc[0, col_idx + offset]).strip()
+                        nums = re.findall(r'\d+', val)
+                        if nums: 
+                            cycle_name = nums[0]
+                            break
+                if not cycle_name: continue
                 
-                # 如果這組資料都是空的，就跳過
-                if pd.isna(load_val) and pd.isna(dist_val) and pd.isna(time_val):
-                    col_idx += 3
-                    group_num += 1
+                # 過濾 Cycle (只保留 1~20 以及 100 的倍數)
+                cycle_num = int(cycle_name)
+                if not ((1 <= cycle_num <= 20) or (cycle_num % 100 == 0)):
                     continue
-                
-                # 組裝成符合資料庫的格式
-                parsed_rows.append({
-                    "file_name": file_name,
-                    "no": int(no_val),
-                    "group_name": f"#{group_num}#",
-                    "load": float(load_val) if not pd.isna(load_val) else None,
-                    "distance": float(dist_val) if not pd.isna(dist_val) else None,
-                    "time": float(time_val) if not pd.isna(time_val) else None
-                })
-            except Exception as e:
-                pass
-            
-            col_idx += 3
-            group_num += 1
 
-    # 轉成 DataFrame
-    df_ready = pd.DataFrame(parsed_rows)
-    
-    # ==========================================
-    # 4. 按下按鈕，將清洗後的資料寫入 Supabase
-    # ==========================================
-    if st.button("🚀 將數據清洗並保存至 Supabase 資料庫"):
-        with st.spinner("正在努力上傳大量數據中，請稍候..."):
-            try:
-                # 將 dataframe 轉成 json 字典格式，這是 Supabase 接受的批次寫入格式
-                data_to_insert = df_ready.to_dict(orient="records")
+                data_part = df_raw.iloc[2:, col_idx:col_idx+2]
                 
-                # 批次寫入名為 'experiment_data' 的 Table 中
-                # 注意：如果資料量極大（好幾萬筆），建議分批上傳，這裡先做標準寫入
-                response = supabase.table("experiment_data").insert(data_to_insert).execute()
+                # 強制將 Load 值轉為絕對值 (.abs()) 確保衰退率計算正確
+                load_col = pd.to_numeric(data_part.iloc[:, 0], errors='coerce').abs()
+                dist_col = pd.to_numeric(data_part.iloc[:, 1], errors='coerce')
                 
-                st.balloons()
-                st.success("🎉 資料成功清洗並永久保存至 Supabase 資料庫！")
-            except Exception as e:
-                st.error(f"上傳失敗，錯誤訊息：{e}")
+                temp_df = pd.DataFrame({'dist': dist_col, 'load': load_col}).dropna()
+                temp_df = temp_df.reset_index(drop=True) 
+                temp_df['dist_round'] = temp_df['dist'].round(1)
+                
+                if temp_df.empty: continue
+                
+                # ==========================================
+                # 區分去程(Open)與回程(Close)
+                # ==========================================
+                max_idx = temp_df['dist'].idxmax()
+                
+                df_open = temp_df.loc[:max_idx].copy()
+                df_open['Direction'] = 'Open'
+                
+                df_close = temp_df.loc[max_idx:].copy()
+                df_close['Direction'] = 'Close'
+                
+                combined_df = pd.concat([df_open, df_close])
+                resampled_df = combined_df[combined_df['dist_round'] % 0.5 == 0].drop_duplicates(subset=['dist_round', 'Direction'])
+                all_cycle_data[cycle_name] = resampled_df
+        except: continue
+    return all_cycle_data
 
-# ==========================================
-# 5. 顯示資料庫內的所有資料與繪圖
-# ==========================================
-st.markdown("---")
-st.subheader("🗂️ 目前保存在雲端資料庫的歷史數據")
-
-if st.button("🔄 重新整理並讀取最新資料庫內容"):
-    try:
-        # 從 Supabase 下載資料 (預設抓最新 1000 筆，你可以移除 limit 抓全部)
-        res = supabase.table("experiment_data").select("*").order("uploaded_at", descending=True).limit(1000).execute()
-        
-        if res.data:
-            df_db = pd.DataFrame(res.data)
-            
-            # 在網頁上顯示資料庫內容
-            st.dataframe(df_db)
-            
-            # 使用 Plotly 畫個簡單的折線圖
-            st.subheader("📈 雲端數據即時視覺化 (以 Load 為例)")
-            fig = px.line(df_db, x="no", y="load", color="group_name", facet_col="file_name",
-                          title="各檔案與組別的 Load 變化趨勢")
-            st.plotly_chart(fig)
+def get_interval_stats(df):
+    ints = {
+        "Open 15-75": (15, 75, 'Open'), 
+        "Open 75-120": (75, 120, 'Open'), 
+        "Close 120-35": (35, 120, 'Close'), 
+        "Close 35-15": (15, 35, 'Close')
+    }
+    stats = {}
+    for n, (l, h, direct) in ints.items():
+        sub = df[(df['Direction'] == direct) & (df['dist_round'] >= l) & (df['dist_round'] <= h)]
+        if not sub.empty:
+            stats[f"{n}_Max"] = sub['load'].max()
+            stats[f"{n}_Min"] = sub['load'].min()
+            stats[f"{n}_Avg"] = sub['load'].mean()
         else:
-            st.info("目前資料庫中還沒有任何數據，請先從上方上傳檔案！")
+            stats[f"{n}_Max"] = stats[f"{n}_Min"] = stats[f"{n}_Avg"] = 0
+    return stats
+
+def calculate_decay_rates(data_dict):
+    sorted_cycles = sorted(data_dict.keys(), key=int)
+    if not sorted_cycles:
+        return pd.DataFrame()
+        
+    base_stats = get_interval_stats(data_dict[sorted_cycles[0]])
+    results = []
+    for cycle in sorted_cycles:
+        current = get_interval_stats(data_dict[cycle])
+        row = {"Cycle": int(cycle)}
+        for k in base_stats.keys():
+            v = current[k]
+            row[k] = round(v, 2)
+            bv = base_stats[k]
+            row[f"{k}_衰退率%"] = round(((v - bv) / bv * 100), 2) if bv else 0.0
+        results.append(row)
+    return pd.DataFrame(results)
+
+# --- 4. 介面與功能 ---
+st.sidebar.title("📁 樣品資料庫管理")
+all_names = list(st.session_state.samples_data.keys())
+
+if all_names:
+    st.sidebar.subheader("現有樣品清單")
+    for old_name in all_names:
+        with st.sidebar.expander(f"📦 {old_name}"):
+            new_n = st.text_input("修改名稱", value=old_name, key=f"rename_{old_name}")
+            if new_n != old_name and new_n not in st.session_state.samples_data:
+                st.session_state.samples_data[new_n] = st.session_state.samples_data.pop(old_name)
+                save_db(st.session_state.samples_data)
+                st.rerun()
+            if st.button("🗑️ 刪除", key=f"del_{old_name}"):
+                del st.session_state.samples_data[old_name]
+                save_db(st.session_state.samples_data)
+                st.rerun()
+
+st.title("🔩 Hinge 壽命測試數據系統")
+tab1, tab2 = st.tabs(["📥 數據上傳", "📊 數據看板"])
+
+with tab1:
+    st.subheader("新增樣品數據")
+    s_name = st.text_input("樣品名稱", value=f"Sample_{len(all_names)+1}")
+    files = st.file_uploader("選擇該樣品的 Excel/CSV 檔案", type=["csv", "xlsx"], accept_multiple_files=True)
+    
+    if st.button("🚀 執行分析並存入資料庫") and files:
+        with st.spinner("數據轉換中..."):
+            # 1. 執行您原本最完美的 Hinge 演算法清洗資料
+            raw_dict = process_hinge_data(files)
+            if raw_dict:
+                # 2. 計算衰退率 DataFrame
+                decay_df = calculate_decay_rates(raw_dict)
+                
+                # 3. 完整保留原本的本地端 JSON 存檔流程
+                st.session_state.samples_data[s_name] = decay_df
+                save_db(st.session_state.samples_data)
+                
+                # 🔄 4. 【全新擴充】同步上傳一份到 Supabase 雲端資料庫
+                if supabase_ready:
+                    try:
+                        # 準備要上傳的結構，加上樣品名稱以便日後篩選
+                        supabase_df = decay_df.copy()
+                        supabase_df.insert(0, "sample_name", s_name)
+                        
+                        # 轉為 Supabase 接受的 JSON 字典格式
+                        data_to_insert = supabase_df.to_dict(orient="records")
+                        
+                        # 批次寫入您在 Supabase 建立的 experiment_data 資料表
+                        supabase_client.table("experiment_data").insert(data_to_insert).execute()
+                        st.sidebar.success(f"☁️ {s_name} 已同步備份至 Supabase！")
+                    except Exception as e:
+                        st.sidebar.error(f"❌ Supabase 同步失敗 (但不影響本地系統)：{e}")
+                
+                st.success(f"✅ {s_name} 已成功存檔！")
+                st.rerun()
+            else:
+                st.error("無法解析檔案內容，請確認檔案格式是否正確。")
+
+with tab2:
+    if not st.session_state.samples_data:
+        st.warning("目前無數據，請先上傳。")
+    else:
+        sel_sample = st.selectbox("🔍 檢視樣品詳細趨勢：", all_names)
+        df_view = st.session_state.samples_data[sel_sample]
+        
+        intervals = ["Open 15-75", "Open 75-120", "Close 120-35", "Close 35-15"]
+        sel_int = st.selectbox("選擇角度區間：", intervals)
+        
+        fig1 = go.Figure()
+        fig1.add_trace(go.Scatter(x=df_view['Cycle'], y=df_view[f"{sel_int}_Avg_衰退率%"], name='Avg%', line=dict(color='#10B981', width=3)))
+        fig1.add_trace(go.Scatter(x=df_view['Cycle'], y=df_view[f"{sel_int}_Max_衰退率%"], name='Max%', line=dict(color='#EF4444', dash='dot')))
+        fig1.add_trace(go.Scatter(x=df_view['Cycle'], y=df_view[f"{sel_int}_Min_衰退率%"], name='Min%', line=dict(color='#3B82F6', dash='dot')))
+        fig1.add_hline(y=0, line_dash="dash", line_color="gray")
+        fig1.update_layout(title=f"{sel_sample} - {sel_int} 衰退趨勢", xaxis_title="Cycles", yaxis_title="變化率 (%)")
+        st.plotly_chart(fig1, use_container_width=True)
+
+        st.divider()
+
+        # ==========================================
+        # GQC判定表 (各區間全局衰退極值) - 完全保留
+        # ==========================================
+        st.subheader("📋 GQC判定表 (各區間全局衰退極值)")
+        
+        summary_rows = []
+        all_intervals = ["Open 15-75", "Open 75-120", "Close 120-35", "Close 35-15"]
+        all_metrics = ["Max", "Min", "Avg"]
+
+        for sn, sdf in st.session_state.samples_data.items():
+            row_data = {"Sample": sn}
+            for inv in all_intervals:
+                for m in all_metrics:
+                    col_name = f"{inv}_{m}_衰退率%"
+                    if col_name in sdf.columns:
+                        row_data[f"{inv}_{m}_MAX"] = f"{sdf[col_name].max():.2f}%"
+                        row_data[f"{inv}_{m}_MIN"] = f"{sdf[col_name].min():.2f}%"
+            summary_rows.append(row_data)
+
+        if summary_rows:
+            df_summary = pd.DataFrame(summary_rows)
+            df_summary.set_index("Sample", inplace=True)
             
-    except Exception as e:
-        st.error(f"讀取資料庫時發生錯誤：{e}")
+            multi_cols = []
+            for inv in all_intervals:
+                angle = inv.split(' ')[1] 
+                for m in all_metrics:
+                    group_name = f"T0 Torque data(%)-{m}({angle})"
+                    multi_cols.append((group_name, "MAX"))
+                    multi_cols.append((group_name, "MIN"))
+            
+            df_summary.columns = pd.MultiIndex.from_tuples(multi_cols)
+            st.dataframe(df_summary, use_container_width=True)
+
+        st.divider()
+
+        # ==========================================
+        # SPC 看板 - 完全保留
+        # ==========================================
+        st.subheader("📉 多樣品極值 SPC 管制圖")
+        metric = st.radio("檢視指標：", ["Max", "Min", "Avg"], horizontal=True)
+        extreme_type = st.radio("極值類型：", ["全局最大值 (MAX)", "全局最小值 (MIN)"], horizontal=True)
+        
+        col_key = f"{sel_int}_{metric}_衰退率%"
+        
+        spc_data = []
+        for sn, sdf in st.session_state.samples_data.items():
+            if col_key in sdf.columns:
+                if "MAX" in extreme_type:
+                    peak_val = sdf[col_key].max()
+                else:
+                    peak_val = sdf[col_key].min()
+                
+                if pd.notna(peak_val):
+                    spc_data.append({"Sample": sn, "Peak_Change": peak_val})
+                
+        if len(spc_data) == 0:
+            st.warning(f"⚠️ 找不到對應的數據可繪製，請確認此區間 ({sel_int}) 是否有資料。")
+        else:
+            spc_df = pd.DataFrame(spc_data)
+            spc_df['Peak_Change'] = pd.to_numeric(spc_df['Peak_Change'], errors='coerce')
+
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(
+                x=spc_df['Sample'], 
+                y=spc_df['Peak_Change'], 
+                mode='lines+markers+text', 
+                name='樣品極值', 
+                marker=dict(size=12),
+                text=spc_df['Peak_Change'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else ""),
+                textposition="top center"
+            ))
+            
+            limits = CONTROL_LIMITS.get(sel_int, {"UCL": 15, "LCL": -15})
+            ucl, lcl = limits.get("UCL", 15), limits.get("LCL", -15)
+            
+            fig2.add_hline(y=ucl, line_dash="dash", line_color="red", annotation_text=f"UCL +{ucl}%")
+            fig2.add_hline(y=lcl, line_dash="dash", line_color="red", annotation_text=f"LCL {lcl}%")
+            
+            y_max = max(spc_df['Peak_Change'].max() + 3, ucl + 3)
+            y_min = min(spc_df['Peak_Change'].min() - 3, lcl - 3)
+            
+            fig2.update_layout(
+                yaxis_title="最大/最小變化率 (%)",
+                yaxis=dict(range=[y_min, y_max])
+            )
+            st.plotly_chart(fig2, use_container_width=True)
