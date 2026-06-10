@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import json
 import os
 import re
-from supabase import create_client, Client
+from supabase import create_client, Client  # 🔄 引入 Supabase 官方連線套件
 
 # --- 1. 初始化與路徑設定 ---
 st.set_page_config(page_title="Hinge 永久分析系統 v2", layout="wide")
@@ -28,7 +28,7 @@ try:
     supabase_ready = True
 except Exception as e:
     supabase_ready = False
-    st.sidebar.warning(f"⚠️ Supabase 尚未連線：{e}")
+    st.sidebar.warning(f"⚠️ Supabase 尚未連線（金鑰未設定）：{e}")
 
 # --- 2. 穩定的資料庫讀寫功能 ---
 def load_db():
@@ -133,19 +133,17 @@ def calculate_decay_rates(data_dict):
 st.sidebar.title("📁 樣品資料庫管理")
 all_names = list(st.session_state.samples_data.keys())
 
-# 🛠️ 重新優化結構：防複製出錯的極簡對齊排版
+# 🛠️ 重新優化結構：防範複製出錯的側邊欄安全排版
 if all_names:
     st.sidebar.subheader("現有樣品清單")
     for old_name in all_names:
         with st.sidebar.expander(f"📦 {old_name}"):
             new_n = st.text_input("修改名稱", value=old_name, key=f"rename_{old_name}")
-            
             if new_n != old_name and new_n not in st.session_state.samples_data:
                 st.session_state.samples_data[new_n] = st.session_state.samples_data.pop(old_name)
                 save_db(st.session_state.samples_data)
                 st.rerun()
-                
-            if st.button("🗑️ 刪除樣品数据", key=f"del_{old_name}"):
+            if st.button("🗑️ 刪除此樣品", key=f"del_{old_name}"):
                 del st.session_state.samples_data[old_name]
                 save_db(st.session_state.samples_data)
                 st.rerun()
@@ -163,11 +161,10 @@ with tab1:
             raw_dict = process_hinge_data(files)
             if raw_dict:
                 decay_df = calculate_decay_rates(raw_dict)
-                
                 st.session_state.samples_data[s_name] = decay_df
                 save_db(st.session_state.samples_data)
                 
-                # 🔄 同步上傳至 Supabase 雲端資料庫
+                # 🔄 【核心補回】同步上傳至 Supabase 雲端資料庫
                 if supabase_ready:
                     try:
                         parsed_supabase_rows = []
@@ -176,12 +173,12 @@ with tab1:
                         
                         for index, row in decay_df.iterrows():
                             current_cycle = int(row['Cycle'])
-                            
                             for inv in all_intervals:
                                 for m in all_metrics:
                                     col_name = f"{inv}_{m}"
                                     if col_name in decay_df.columns:
                                         val = row[col_name]
+                                        # 🔍 對齊你在 Supabase 後台實際建立的欄位名稱 (file_name, no)
                                         parsed_supabase_rows.append({
                                             "file_name": s_name,
                                             "no": current_cycle,
